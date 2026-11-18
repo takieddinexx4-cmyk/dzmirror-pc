@@ -1,0 +1,46 @@
+name: Build PC
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip
+        shell: pwsh
+        run: Expand-Archive -Path DZMirrorPC.zip -DestinationPath . -Force
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Get scrcpy
+        shell: pwsh
+        working-directory: DZMirrorPC
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo Genymobile/scrcpy --pattern "scrcpy-win64-*.zip" --dir tmp
+          $z = Get-ChildItem tmp -Filter *.zip | Select-Object -First 1
+          Expand-Archive $z.FullName -DestinationPath tmp/x
+          New-Item bin -ItemType Directory -Force | Out-Null
+          $d = Get-ChildItem tmp/x -Directory | Select-Object -First 1
+          Copy-Item "$($d.FullName)\*" bin -Recurse
+      - name: Get USB driver
+        continue-on-error: true
+        shell: pwsh
+        working-directory: DZMirrorPC
+        run: |
+          Invoke-WebRequest https://dl.google.com/android/repository/usb_driver_r13-windows.zip -OutFile drv.zip
+          Expand-Archive drv.zip -DestinationPath bin/driver -Force
+      - name: Build
+        working-directory: DZMirrorPC
+        run: |
+          npm install
+          npx electron-builder --win --publish never
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pc-v${{ github.run_number }}
+          name: DZ Mirror PC v${{ github.run_number }}
+          files: DZMirrorPC/dist/*.exe
