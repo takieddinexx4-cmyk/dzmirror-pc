@@ -5,6 +5,9 @@ on:
   push:
     branches: [ main, master ]
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -31,7 +34,6 @@ jobs:
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           New-Item -ItemType Directory -Force -Path bin, "bin/uxplay", "bin/driver/android", "bin/driver/apple" | Out-Null
 
-          # 1. Scrcpy + ADB
           $sc = Invoke-RestMethod -Uri "https://api.github.com/repos/Genymobile/scrcpy/releases/latest"
           $scAsset = $sc.assets | Where-Object { $_.name -match "scrcpy-win64.*\.zip$" } | Select-Object -First 1
           Invoke-WebRequest -Uri $scAsset.browser_download_url -OutFile scrcpy.zip
@@ -40,7 +42,6 @@ jobs:
           Copy-Item -Path "$($inner.FullName)\*" -Destination "bin\" -Recurse -Force
           Remove-Item scrcpy.zip, scrcpy_tmp -Recurse -Force
 
-          # 2. UxPlay (AirPlay Receiver for iPhone)
           try {
             $ux = Invoke-RestMethod -Uri "https://api.github.com/repos/leapbtw/uxplay-windows/releases/latest"
             $uxZip = $ux.assets | Where-Object { $_.name -match "x64.*\.zip$|\.zip$" -and $_.name -notmatch "arm64" } | Select-Object -First 1
@@ -57,14 +58,12 @@ jobs:
             }
           } catch { Write-Warning "UxPlay download warning: $_" }
 
-          # 3. Android USB Driver
           try {
             Invoke-WebRequest -Uri "https://dl.google.com/android/repository/usb_driver_r13-windows.zip" -OutFile drv.zip
             Expand-Archive -Path drv.zip -DestinationPath "bin/driver/android" -Force
             Remove-Item drv.zip -Force
           } catch { Write-Warning "Android driver warning: $_" }
 
-          # 4. Apple Mobile Device Support & Bonjour (Offline MSIs extracted via 7z)
           try {
             Invoke-WebRequest -Uri "https://www.apple.com/itunes/download/win64" -OutFile iTunes64Setup.exe
             New-Item -ItemType Directory -Force -Path itunes_tmp | Out-Null
@@ -83,7 +82,14 @@ jobs:
         working-directory: DZMirrorPC
         run: npx electron-builder --win --publish never
 
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DZMirror-Pro-Windows-Setup
+          path: DZMirrorPC/dist/*.exe
+
       - name: Publish Release
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: pc-v${{ github.run_number }}
