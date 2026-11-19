@@ -1,46 +1,91 @@
-name: Build PC
+name: Build DZ Mirror Pro (Windows)
+
 on:
-  push:
   workflow_dispatch:
-permissions:
-  contents: write
+  push:
+    branches: [ main, master ]
+
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Unzip
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unpack DZMirrorPC.zip if present
         shell: pwsh
-        run: Expand-Archive -Path DZMirrorPC.zip -DestinationPath . -Force
-      - uses: actions/setup-node@v4
+        run: |
+          if (Test-Path "DZMirrorPC.zip") {
+            Expand-Archive -Path "DZMirrorPC.zip" -DestinationPath "." -Force
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Get scrcpy
-        shell: pwsh
-        working-directory: DZMirrorPC
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download --repo Genymobile/scrcpy --pattern "scrcpy-win64-*.zip" --dir tmp
-          $z = Get-ChildItem tmp -Filter *.zip | Select-Object -First 1
-          Expand-Archive $z.FullName -DestinationPath tmp/x
-          New-Item bin -ItemType Directory -Force | Out-Null
-          $d = Get-ChildItem tmp/x -Directory | Select-Object -First 1
-          Copy-Item "$($d.FullName)\*" bin -Recurse
-      - name: Get USB driver
-        continue-on-error: true
+
+      - name: Download Scrcpy, ADB, UxPlay (AirPlay), Android & Apple Drivers
         shell: pwsh
         working-directory: DZMirrorPC
         run: |
-          Invoke-WebRequest https://dl.google.com/android/repository/usb_driver_r13-windows.zip -OutFile drv.zip
-          Expand-Archive drv.zip -DestinationPath bin/driver -Force
-      - name: Build
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          New-Item -ItemType Directory -Force -Path bin, "bin/uxplay", "bin/driver/android", "bin/driver/apple" | Out-Null
+
+          # 1. Scrcpy + ADB
+          $sc = Invoke-RestMethod -Uri "https://api.github.com/repos/Genymobile/scrcpy/releases/latest"
+          $scAsset = $sc.assets | Where-Object { $_.name -match "scrcpy-win64.*\.zip$" } | Select-Object -First 1
+          Invoke-WebRequest -Uri $scAsset.browser_download_url -OutFile scrcpy.zip
+          Expand-Archive -Path scrcpy.zip -DestinationPath scrcpy_tmp -Force
+          $inner = Get-ChildItem -Path scrcpy_tmp -Directory | Select-Object -First 1
+          Copy-Item -Path "$($inner.FullName)\*" -Destination "bin\" -Recurse -Force
+          Remove-Item scrcpy.zip, scrcpy_tmp -Recurse -Force
+
+          # 2. UxPlay (AirPlay Receiver for iPhone)
+          try {
+            $ux = Invoke-RestMethod -Uri "https://api.github.com/repos/leapbtw/uxplay-windows/releases/latest"
+            $uxZip = $ux.assets | Where-Object { $_.name -match "x64.*\.zip$|\.zip$" -and $_.name -notmatch "arm64" } | Select-Object -First 1
+            $uxMsi = $ux.assets | Where-Object { $_.name -match "x64.*\.msi$|\.msi$" -and $_.name -notmatch "arm64" } | Select-Object -First 1
+            if ($uxZip) {
+              Invoke-WebRequest -Uri $uxZip.browser_download_url -OutFile uxplay.zip
+              Expand-Archive -Path uxplay.zip -DestinationPath "bin/uxplay" -Force
+              Remove-Item uxplay.zip -Force
+            } elseif ($uxMsi) {
+              Invoke-WebRequest -Uri $uxMsi.browser_download_url -OutFile uxplay.msi
+              $absUx = (Resolve-Path "bin/uxplay").Path
+              Start-Process -FilePath "msiexec.exe" -ArgumentList "/a `"$((Resolve-Path 'uxplay.msi').Path)`" /qn TARGETDIR=`"$absUx`"" -Wait
+              Remove-Item uxplay.msi -Force
+            }
+          } catch { Write-Warning "UxPlay download warning: $_" }
+
+          # 3. Android USB Driver
+          try {
+            Invoke-WebRequest -Uri "https://dl.google.com/android/repository/usb_driver_r13-windows.zip" -OutFile drv.zip
+            Expand-Archive -Path drv.zip -DestinationPath "bin/driver/android" -Force
+            Remove-Item drv.zip -Force
+          } catch { Write-Warning "Android driver warning: $_" }
+
+          # 4. Apple Mobile Device Support & Bonjour (Offline MSIs extracted via 7z)
+          try {
+            Invoke-WebRequest -Uri "https://www.apple.com/itunes/download/win64" -OutFile iTunes64Setup.exe
+            New-Item -ItemType Directory -Force -Path itunes_tmp | Out-Null
+            & 7z x iTunes64Setup.exe -oitunes_tmp -y | Out-Null
+            Get-ChildItem -Path itunes_tmp -Recurse -Include "AppleMobileDeviceSupport64.msi","Bonjour64.msi","Bonjour.msi" | ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination "bin/driver/apple/" -Force
+            }
+            Remove-Item iTunes64Setup.exe, itunes_tmp -Recurse -Force
+          } catch { Write-Warning "Apple offline driver warning: $_" }
+
+      - name: Install dependencies
         working-directory: DZMirrorPC
-        run: |
-          npm install
-          npx electron-builder --win --publish never
-      - uses: softprops/action-gh-release@v2
+        run: npm install
+
+      - name: Build Windows Installer (.exe)
+        working-directory: DZMirrorPC
+        run: npx electron-builder --win --publish never
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: pc-v${{ github.run_number }}
-          name: DZ Mirror PC v${{ github.run_number }}
+          name: DZ Mirror Pro v${{ github.run_number }}
           files: DZMirrorPC/dist/*.exe
